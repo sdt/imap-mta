@@ -1,0 +1,31 @@
+#!/usr/bin/env perl
+
+use Email::Simple       qw( );
+use Net::IMAP::Simple   qw( );
+use Sys::Hostname       qw( hostname );
+use 5.22.0;
+
+my @missing = grep { !$ENV{$_} }
+    qw( IMAP_MTA_HOST IMAP_MTA_USER IMAP_MTA_PASSWORD );
+die 'Missing config: ' . join(', ', @missing) . "\n" if @missing;
+
+my $message = do { local $/; <STDIN> }
+     or exit(1);
+my $hostname = hostname;
+
+my $email = Email::Simple->new($message);
+if (! grep { $_ eq 'From' } $email->header_names) {
+    my $from = $ENV{IMAP_MTA_FROM} // "email\@$hostname";
+    $email->header_set('From', $from);
+}
+
+my $imap = Net::IMAP::Simple->new($ENV{IMAP_MTA_HOST}, use_ssl => 1);
+$imap->login($ENV{IMAP_MTA_USER}, $ENV{IMAP_MTA_PASSWORD}) or die $imap->errstr;
+
+my $mbox = $ENV{IMAP_MTA_MAILBOX} // "local/$hostname";
+if (!$imap->mailboxes($mbox)) {
+    $imap->create_mailbox($mbox) or die $imap->errstr;
+}
+$imap->put($mbox, $email->as_string) or die $imap->errstr;
+
+exit(0);

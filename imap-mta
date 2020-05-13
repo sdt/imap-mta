@@ -1,31 +1,107 @@
 #!/usr/bin/env perl
 
-use Email::Simple       qw( );
-use Net::IMAP::Simple   qw( );
-use Sys::Hostname       qw( hostname );
+use Email::Simple           qw( );
+use Function::Parameters    qw( :strict );
+use Log::Any                qw( $log );
+use Log::Any::Adapter       qw( );
+use Net::IMAP::Simple       qw( );
+use Path::Tiny              qw( path );
+use Proc::Pidfile           qw( );
+use Sys::Hostname           qw( hostname );
+use Try::Tiny;
 use 5.22.0;
 
-my @missing = grep { !$ENV{$_} }
-    qw( IMAP_MTA_HOST IMAP_MTA_USER IMAP_MTA_PASSWORD );
-die 'Missing config: ' . join(', ', @missing) . "\n" if @missing;
+exit(main(@ARGV));
 
-my $message = do { local $/; <STDIN> }
-     or exit(1);
-my $hostname = hostname;
+fun main(@args) {
+    Log::Any::Adapter->set('Syslog', name => 'imap-mta', facility => 'mail');
 
-my $email = Email::Simple->new($message);
-if (! grep { $_ eq 'From' } $email->header_names) {
-    my $from = $ENV{IMAP_MTA_FROM} // "email\@$hostname";
-    $email->header_set('From', $from);
+    if (my @missing = grep { !$ENV{$_} }
+                qw( IMAP_MTA_HOST IMAP_MTA_USER IMAP_MTA_PASSWORD )) {
+        $log->error('Missing config: ' . join(', ', @missing));
+        return 2;
+    }
+
+    my $spool_dir = path($ENV{IMAP_MTA_SPOOLDIR} // '/var/spool/imap-mta');
+    my $pid_file  = path($ENV{IMAP_MTA_PIDFILE} // '/run/lock/imap-mta.pid');
+
+    my $exit_code = 0;
+    if (@args == 0) {
+        # If no args were specified, try to read an email from STDIN, and
+        # write it out to the spool dir.
+        if (my $message = do { local $/; <STDIN> }) {
+            my $filename = sprintf('%d-%d', time, $$);
+            my $path = $spool_dir->child($filename);
+            $log->info("Writing message to $path");
+            try {
+                $spool_dir->child($filename)->spew($message);
+            }
+            catch {
+                $log->error("Writing message to $path failed: $_");
+                $exit_code = 3;
+            };
+            return $exit_code if $exit_code;
+        }
+    }
+    elsif (@args == 1) {
+        usage() unless $args[0] eq 'run-queue';
+    }
+    else {
+        usage();
+    }
+
+    # Now before we process the queue, make sure we're the only one doing so.
+    # This will quietly exit if another instance already exists.
+    my $pp = Proc::Pidfile->new(pidfile => $pid_file, silent => 1);
+
+    try {
+        process_queue($spool_dir);
+    }
+    catch {
+        chomp;
+        $log->error($_);
+        $exit_code = 4;
+    };
+    return $exit_code;
 }
 
-my $imap = Net::IMAP::Simple->new($ENV{IMAP_MTA_HOST}, use_ssl => 1);
-$imap->login($ENV{IMAP_MTA_USER}, $ENV{IMAP_MTA_PASSWORD}) or die $imap->errstr;
+fun process_queue($spool_dir) {
+    # Now see if there are any messages in the spool dir.
+    my $hostname = hostname;
 
-my $mbox = $ENV{IMAP_MTA_MAILBOX} // "local/$hostname";
-if (!$imap->mailboxes($mbox)) {
-    $imap->create_mailbox($mbox) or die $imap->errstr;
+    my @files = $spool_dir->children;
+    if (@files == 0) {
+        $log->info('Mail queue empty');
+        return;
+    }
+    $log->info('Processing mail queue');
+
+    my $imap = Net::IMAP::Simple->new($ENV{IMAP_MTA_HOST}, use_ssl => 1);
+    $imap->login($ENV{IMAP_MTA_USER}, $ENV{IMAP_MTA_PASSWORD})
+        or die $imap->errstr . "\n";
+
+    my $mbox = $ENV{IMAP_MTA_MAILBOX} // "local/$hostname";
+    if (!$imap->mailboxes($mbox)) {
+        $imap->create_mailbox($mbox) or die $imap->errstr . "\n";
+    }
+
+    for my $file (@files) {
+        $log->info("Sending $file");
+        my $message = $file->slurp;
+        my $email = Email::Simple->new($message);
+        if (! grep { $_ eq 'From' } $email->header_names) {
+            my $from = $ENV{IMAP_MTA_FROM} // "email\@$hostname";
+            $email->header_set('From', $from);
+        }
+
+        $imap->put($mbox, $email->as_string) or die $imap->errstr . "\n";
+
+        $file->remove;
+    }
+    $log->info('Processing mail queue complete');
+    return;
 }
-$imap->put($mbox, $email->as_string) or die $imap->errstr;
 
-exit(0);
+fun usage() {
+    die "usage: $0 [run-queue]\n";
+}

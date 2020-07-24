@@ -11,6 +11,8 @@ use Sys::Hostname           qw( hostname );
 use Try::Tiny;
 use 5.22.0;
 
+my $hostname = hostname;
+
 exit(main(@ARGV));
 
 fun main(@args) {
@@ -34,7 +36,9 @@ fun main(@args) {
             my $path = $spool_dir->child($filename);
             $log->info("Writing message to $path");
             try {
-                $spool_dir->child($filename)->spew($message);
+                my $email = Email::Simple->new($message);
+                normalise_headers($email);
+                $spool_dir->child($filename)->spew($email->as_string);
             }
             catch {
                 $log->error("Writing message to $path failed: $_");
@@ -67,8 +71,6 @@ fun main(@args) {
 
 fun process_queue($spool_dir) {
     # Now see if there are any messages in the spool dir.
-    my $hostname = hostname;
-
     my @files = $spool_dir->children;
     if (@files == 0) {
         $log->info('Mail queue empty');
@@ -88,18 +90,24 @@ fun process_queue($spool_dir) {
     for my $file (@files) {
         $log->info("Sending $file");
         my $message = $file->slurp;
-        my $email = Email::Simple->new($message);
-        if (! grep { $_ eq 'From' } $email->header_names) {
-            my $from = $ENV{IMAP_MTA_FROM} // "email\@$hostname";
-            $email->header_set('From', $from);
-        }
-
-        $imap->put($mbox, $email->as_string) or die $imap->errstr . "\n";
+        $imap->put($mbox, $message) or die $imap->errstr . "\n";
 
         $file->remove;
     }
     $log->info('Processing mail queue complete');
     return;
+}
+
+fun normalise_headers($email) {
+    if (! grep { $_ eq 'From' } $email->header_names) {
+        my $from = $ENV{IMAP_MTA_FROM} // "email\@$hostname";
+        $email->header_set('From', $from);
+    }
+
+    if (! grep { $_ eq 'Date' } $email->header_names) {
+        my $date = localtime->strftime('%a, %d %b %Y %T %z');
+        $email->header_set('Date', $date);
+    }
 }
 
 fun usage() {

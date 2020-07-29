@@ -16,13 +16,9 @@ my $hostname = hostname;
 exit(main(@ARGV));
 
 fun main(@args) {
+    # First write out any emails to the mail spool. We can do this without
+    # any network connectivity, or even any config.
     Log::Any::Adapter->set('Syslog', name => 'imap-mta', facility => 'mail');
-
-    if (my @missing = grep { !$ENV{$_} }
-                qw( IMAP_MTA_HOST IMAP_MTA_USER IMAP_MTA_PASSWORD )) {
-        $log->error('Missing config: ' . join(', ', @missing));
-        return 2;
-    }
 
     my $spool_dir = path($ENV{IMAP_MTA_SPOOLDIR} // '/var/spool/imap-mta');
     my $pid_file  = path($ENV{IMAP_MTA_PIDFILE} // '/run/lock/imap-mta.pid');
@@ -52,6 +48,14 @@ fun main(@args) {
     }
     else {
         usage();
+    }
+
+    # Now that we've written out any incoming emails, we can safely bomb out if
+    # our config is missing.
+    if (my @missing = grep { !$ENV{$_} }
+                qw( IMAP_MTA_HOST IMAP_MTA_USER IMAP_MTA_PASSWORD )) {
+        $log->error('Missing config: ' . join(', ', @missing));
+        return 2;
     }
 
     # Now before we process the queue, make sure we're the only one doing so.

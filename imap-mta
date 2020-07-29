@@ -82,7 +82,8 @@ fun process_queue($spool_dir) {
     }
     $log->info('Processing mail queue');
 
-    my $imap = Net::IMAP::Simple->new($ENV{IMAP_MTA_HOST}, use_ssl => 1);
+    my $imap = Net::IMAP::Simple->new($ENV{IMAP_MTA_HOST}, use_ssl => 1)
+        or die $Net::IMAP::Simple::errstr . "\n";
     $imap->login($ENV{IMAP_MTA_USER}, $ENV{IMAP_MTA_PASSWORD})
         or die $imap->errstr . "\n";
 

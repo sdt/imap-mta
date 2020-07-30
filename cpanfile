@@ -7,4 +7,5 @@ requires $_ for qw(
     Path::Tiny
     Proc::Pidfile
     Sys::Hostname
+    Time::Piece
 );

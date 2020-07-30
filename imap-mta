@@ -25,30 +25,23 @@ fun main(@args) {
     my $pid_file  = path($ENV{IMAP_MTA_PIDFILE} // '/run/lock/imap-mta.pid');
 
     my $exit_code = 0;
-    if (@args == 0) {
-        # If no args were specified, try to read an email from STDIN, and
-        # write it out to the spool dir.
-        if (my $message = do { local $/; <STDIN> }) {
-            my $filename = sprintf('%d-%d', time, $$);
-            my $path = $spool_dir->child($filename);
-            $log->info("Writing message to $path");
-            try {
-                my $email = Email::Simple->new($message);
-                normalise_headers($email);
-                $spool_dir->child($filename)->spew($email->as_string);
-            }
-            catch {
-                $log->error("Writing message to $path failed: $_");
-                $exit_code = 3;
-            };
-            return $exit_code if $exit_code;
+
+    # If no args were specified, try to read an email from STDIN, and
+    # write it out to the spool dir.
+    if (my $message = do { local $/; <STDIN> }) {
+        my $filename = sprintf('%d-%d', time, $$);
+        my $path = $spool_dir->child($filename);
+        $log->info("Writing message to $path");
+        try {
+            my $email = Email::Simple->new($message);
+            normalise_headers($email);
+            $spool_dir->child($filename)->spew($email->as_string);
         }
-    }
-    elsif (@args == 1) {
-        usage() unless $args[0] eq 'run-queue';
-    }
-    else {
-        usage();
+        catch {
+            $log->error("Writing message to $path failed: $_");
+            $exit_code = 3;
+        };
+        return $exit_code if $exit_code;
     }
 
     # Now that we've written out any incoming emails, we can safely bomb out if
